@@ -1,9 +1,9 @@
-from typing import Union
-
-from django.apps import apps
+import py_cui
 from django.contrib.admin import site as admin_site
 from py_cui import PyCUI, keys
 from py_cui.widgets import Widget
+
+from . import edit_model
 
 TUI_DIMENSIONS = (9, 3)
 MODEL_ADMINS = admin_site._registry 
@@ -16,7 +16,7 @@ def _require_selected_model(mtd):
         mtd(self, *args, **kwargs)
     return _wrapper
 
-class ModelRowItem:
+class MenuItem:
     def __init__(self, obj, row_text) -> None:
         self.obj = obj
         self.row_text = row_text
@@ -35,7 +35,18 @@ class Interface(PyCUI):
         self.selected_model = None
         self.pk_name = None
         self.queryset = None
+        self.search_text = None
         self.set_title('Django Admin TUI')
+
+    # mostly copied from the library, just adding default text option
+    def show_text_box_popup(self, title, command, text="", password=False):
+        self._popup = py_cui.popups.TextBoxPopup(self, title, py_cui.WHITE_ON_BLACK, command, self._renderer, password, self._logger)
+        self._logger.debug(f'Opened {str(type(self._popup))} popup with title {title}')
+        self._popup.set_text(text)
+        # shift cursor to end of text
+        for _ in text:
+            self._popup._move_right()
+
         
     # called after django has started
     def initialize(self):
@@ -58,7 +69,7 @@ class Interface(PyCUI):
         self.sort_btn = self.add_button("Sort", 2, 1, row_span=1, column_span=1)
         self.filter_btn = self.add_button("Filter", 3, 1, row_span=1, column_span=1)
 
-        self.model_rows = self.add_checkbox_menu('Rows', 4, 1, row_span=5, column_span=2)
+        self.model_rows = self.add_checkbox_menu('Rows', 4, 1, row_span=5, column_span=2, checked_char='*')
 
     def _add_keybindings(self):
         self.app_menu.add_key_command(keys.KEY_ENTER, self.select_app)
@@ -98,11 +109,16 @@ class Interface(PyCUI):
     def update_row_display(self, search_text=None):
         self.model_rows.clear()
         search_skipped = False
+        if search_text is None and self.search_text:
+            search_text = self.search_text
+        elif self.search_text is None and search_text:
+            self.search_text = search_text
+
         for obj in self.queryset:
             if search_text and not (search_text.lower() in str(obj.pk).lower() or search_text in str(obj).lower()):
                 search_skipped = True
                 continue
-            self.model_rows.add_item(ModelRowItem(obj, f'{obj.pk} -- {str(obj)}'))
+            self.model_rows.add_item(MenuItem(obj, f'{obj.pk} -- {str(obj)}'))
 
         if not self.model_rows._view_items and search_skipped:
             self.show_warning_popup('No results', "Search returned no matching rows.")
@@ -130,10 +146,15 @@ class Interface(PyCUI):
         self.update_actions_title()
         self.move_focus(self.model_rows)
 
-    def toggle_row(self):
+    def toggle_row(self, skip_update=False):
         # how the library does it
         self.model_rows.toggle_item_checked(self.model_rows.get())
-        self.update_actions_title()
+        if not skip_update:
+            self.update_actions_title()
+
+    def clear_model_rows(self):
+        for item in self.model_rows._selected_item_dict:
+            self.model_rows.mark_item_as_not_checked(item)
         
     def update_actions_title(self):
         rows_checked = sum(1 for row_checked in self.model_rows._selected_item_dict.values() if row_checked)
@@ -144,6 +165,24 @@ class Interface(PyCUI):
 
     def select_model_object(self):
         selected_obj = self.model_rows.get().obj
+        self.show_message_popup('woah', str(selected_obj))
+
+        EDIT_FIELD = "Edit field"
+        DROP_IN = "Drop in terminal"
+        def handle(option):
+            def handle(item):
+                edit_model.handle_string_field(selected_obj, item.obj, self.pk_name, self)
+
+            if option == EDIT_FIELD:
+                # TODO: maybe use _get_fields() since this is terminal
+                fields = [MenuItem(field, field.name) for field in selected_obj._meta.get_fields()]
+                self.show_menu_popup(EDIT_FIELD, fields, command=handle)
+
+            self.toggle_row(skip_update=False)
+
+        self.show_menu_popup("Edit model", (EDIT_FIELD, DROP_IN), command=handle)
+        # # self.clear_model_rows()
+        # self.update_row_display()
 
     @_require_selected_model
     def search(self):
@@ -154,7 +193,7 @@ class Interface(PyCUI):
 
     @_require_selected_model
     def sort(self):
-        self.show_text_box_popup("Search", print)
+        pass 
 
     @_require_selected_model
     def filter(self):
