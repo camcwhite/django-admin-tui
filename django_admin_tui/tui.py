@@ -1,28 +1,35 @@
+from typing import Any, Callable, List
+
 import py_cui
 from django.contrib.admin import site as admin_site
+from django.db import IntegrityError
+from django.db.models import fields
 from py_cui import PyCUI, keys
 from py_cui.widgets import Widget
 
-from . import edit_model
+from django_admin_tui import edit_model
+from django_admin_tui.helpers import FieldMenuItem, MenuItem, get_model_name
+from django_admin_tui.menu_popup import MenuPopup
+from django_admin_tui.msg_popup import MessagePopup
 
 TUI_DIMENSIONS = (9, 3)
 MODEL_ADMINS = admin_site._registry 
 
-def _require_selected_model(mtd):
-    def _wrapper(self, *args, **kwargs):
-        if not self.selected_model:
-            self.move_focus(self.model_menu)
-            return
-        mtd(self, *args, **kwargs)
-    return _wrapper
+# fields that are set with a text box (unless choices are given)
+TEXT_INPUT_FIELDS = (fields.CharField, fields.TextField, fields.EmailField, fields.SlugField, fields.URLField, fields.UUIDField)
 
-class MenuItem:
-    def __init__(self, obj, row_text) -> None:
-        self.obj = obj
-        self.row_text = row_text
+# require that a field be set and not None before entering method
+def _require_not_none(field, focus_widget=None):
+    def _deco(mtd):
+        def _wrapper(self, *args, **kwargs):
+            if getattr(self, field, None) is None:
+                if focus_widget and hasattr(self, focus_widget):
+                    self.move_focus(getattr(self, focus_widget))
+                return
+            mtd(self, *args, **kwargs)
+        return _wrapper
+    return _deco
 
-    def __str__(self) -> str:
-        return self.row_text
 
 # just a wrapper around py_cui.PyCUI
 class Interface(PyCUI):
@@ -37,6 +44,8 @@ class Interface(PyCUI):
         self.pk_name = None
         self.queryset = None
         self.search_text = None
+        self.new_model_menu = None
+
         self.set_title(self.TITLE)
 
     # mostly copied from the library, just adding default text option
@@ -48,6 +57,30 @@ class Interface(PyCUI):
         for _ in text:
             self._popup._move_right()
 
+
+    # mostly copied from the library, just using custom menu class
+    def show_menu_popup(self, title: str, menu_items: List[str], command: Callable[[str], Any], run_command_if_none: bool=False, save_command: Callable=None, skip_close_on_enter=False):
+        color = py_cui.WHITE_ON_BLACK
+        self._popup = MenuPopup(self, menu_items, title, color, command, self._renderer, self._logger, run_command_if_none)
+        self._logger.debug(f'Opened {str(type(self._popup))} popup with title {title}')
+
+        if save_command:
+            self._popup.save_command = save_command
+
+        if skip_close_on_enter:
+            self._popup.skip_close_on_enter = True
+
+        return self._popup
+
+    # mostly copied from the library, just using custom message class
+    def show_message_popup(self, title: str, text: str, color: int = py_cui.WHITE_ON_BLACK, on_close=None) -> None:
+        self._popup = MessagePopup(self, title, text, color, self._renderer, self._logger)
+        self._logger.debug(f'Opened {str(type(self._popup))} popup with title {title}')
+
+        if callable(on_close):
+            self._popup.on_close = on_close
+
+        return self._popup
         
     # called after django has started
     def initialize(self):
@@ -106,7 +139,7 @@ class Interface(PyCUI):
 
         # need a unique string for each row
         self.pk_name = self.selected_model._meta.pk.name
-        self.model_rows.set_title(f'[selected] - {self.pk_name} -- {self.selected_model.__name__}')
+        self.model_rows.set_title(f'[selected] - {self.pk_name} -- {get_model_name(self.selected_model)}')
         self.queryset = objects
 
         self.update_row_display()
@@ -134,7 +167,7 @@ class Interface(PyCUI):
         selected_app_label = self.app_menu.get() if app is None else app
         if self.app_menu.get() != selected_app_label:
             self.app_menu.set_selected_item_index(self.app_menu._view_items.index(selected_app_label))
-        self.models = {model.__name__: model for model in MODEL_ADMINS.keys() if model._meta.app_label == selected_app_label} 
+        self.models = {get_model_name(model): model for model in MODEL_ADMINS.keys() if model._meta.app_label == selected_app_label} 
         self.model_menu.clear()
         self.model_menu.add_item_list(sorted(self.models.keys()))
         self.move_focus(self.model_menu)
@@ -147,7 +180,7 @@ class Interface(PyCUI):
             return
 
         self.selected_model = selected_model
-        self.model_label.set_title(selected_model.__name__)
+        self.model_label.set_title(get_model_name(self.selected_model))
         self._fill_rows()
         self.update_actions_title()
         self.move_focus(self.model_rows)
@@ -169,45 +202,85 @@ class Interface(PyCUI):
         else:
             self.action_menu.set_title(f'Actions')
 
+    def get_field_row(self, field, instance=None) -> FieldMenuItem:
+        init_value = '<not set>'
+        if instance is None and getattr(field, 'default', fields.NOT_PROVIDED) != fields.NOT_PROVIDED:
+            init_value = str(field.default)
+        elif instance:
+            init_value = getattr(instance, field.name, "")
+
+        return FieldMenuItem(field, f'{field.name}: {init_value}', init_value)
+
+    @_require_not_none('selected_model', 'model_menu')
     def select_model_object(self):
         selected_obj = self.model_rows.get().obj
-        self.show_message_popup('woah', str(selected_obj))
 
         EDIT_FIELD = "Edit field"
         DROP_IN = "Drop in terminal"
         def handle(option):
             def handle(item):
-                edit_model.handle_string_field(selected_obj, item.obj, self.pk_name, self)
+                edit_model.handle_string_field(item, self.pk_name, self, selected_obj)
 
             if option == EDIT_FIELD:
                 # TODO: maybe use _get_fields() since this is terminal
-                fields = [MenuItem(field, field.name) for field in selected_obj._meta.get_fields()]
+                fields = [self.get_field_row(field, selected_obj) for field in selected_obj._meta.get_fields()]
                 self.show_menu_popup(EDIT_FIELD, fields, command=handle)
 
-            self.toggle_row(skip_update=False)
+            # self.toggle_row(skip_update=True)
 
         self.show_menu_popup("Edit model", (EDIT_FIELD, DROP_IN), command=handle)
-        # # self.clear_model_rows()
-        # self.update_row_display()
 
-    @_require_selected_model
+    @_require_not_none('selected_model', 'model_menu')
     def search(self):
         self.update_row_display(search_text=self.search_bar.get())
 
     def clear_search(self):
         self.search_bar.set_text('')
 
-    @_require_selected_model
+    @_require_not_none('selected_model', 'model_menu')
     def sort(self):
         pass 
 
-    @_require_selected_model
+    @_require_not_none('selected_model', 'model_menu')
     def filter(self):
         self.show_text_box_popup("Search", print)
 
-    @_require_selected_model
+    @_require_not_none('selected_model', 'model_menu')
     def add_instance(self):
-        self.show_form_popup()
+        self.new_model_fields = {}
+        create_fields = self.selected_model._meta.get_fields()
+        menu_fields = [self.get_field_row(field) for field in create_fields if not isinstance(field, fields.AutoFieldMixin)]
+
+        def handle(selected_field):
+            if getattr(selected_field.obj, 'choices', None) is not None:
+                edit_model.handle_choice_field(selected_field, self.pk_name, self)
+            elif isinstance(selected_field.obj, TEXT_INPUT_FIELDS):
+                edit_model.handle_string_field(selected_field, self.pk_name, self) 
+
+        self.new_model_menu = self.show_menu_popup(f"Add {get_model_name(self.selected_model)} (Shift+S to save)", menu_items=menu_fields, command=handle, save_command=self.save_new_model, skip_close_on_enter=True)
+
+    @_require_not_none('new_model_menu', 'create_btn')
+    def set_new_model_field(self, field, value, menu_item):
+        self.new_model_fields[field] = value 
+        # popup is closed after submitting new field
+        self._popup = self.new_model_menu
+        menu_item.row_text = f'{field.name}: {value}'
+
+
+    @_require_not_none('selected_model', 'model_menu')
+    @_require_not_none('new_model_fields', 'create_btn')
+    def save_new_model(self):
+        try:
+            instance = self.selected_model.objects.create(**{field.name: value for field, value in self.new_model_fields.items()}) 
+        except IntegrityError as e:
+            self.show_error_popup(f'Integrity Error on creation: {str(e)}')
+            return
+
+        self.show_message_popup('Model created', f'{get_model_name(self.selected_model)} created succesfully, {self.pk_name} = {instance.pk}.', on_close=self._fill_rows) 
+
+        self.new_model_fields = None
+
+        
 
 tui = Interface()
 
