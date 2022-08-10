@@ -26,6 +26,7 @@ class MenuItem:
 
 # just a wrapper around py_cui.PyCUI
 class Interface(PyCUI):
+    TITLE = 'Django Admin TUI'
     NO_MODEL_CHOSEN = '<No model chosen>'
 
     def __init__(self):
@@ -36,7 +37,7 @@ class Interface(PyCUI):
         self.pk_name = None
         self.queryset = None
         self.search_text = None
-        self.set_title('Django Admin TUI')
+        self.set_title(self.TITLE)
 
     # mostly copied from the library, just adding default text option
     def show_text_box_popup(self, title, command, text="", password=False):
@@ -63,7 +64,8 @@ class Interface(PyCUI):
         
         self.model_label = self.add_label(self.NO_MODEL_CHOSEN, 0, 1, row_span=1, column_span=2)
 
-        self.action_menu = self.add_scroll_menu('Actions', 1, 2, row_span=3, column_span=1)
+        self.action_menu = self.add_scroll_menu('Actions', 1, 2, row_span=2, column_span=1)
+        self.create_btn = self.add_button("Add", 3, 2, row_span=1, column_span=1)
 
         self.search_bar = self.add_text_box("Search (Ctrl+U to clear)", 1, 1, row_span=1, column_span=1)
         self.sort_btn = self.add_button("Sort", 2, 1, row_span=1, column_span=1)
@@ -74,10 +76,14 @@ class Interface(PyCUI):
     def _add_keybindings(self):
         self.app_menu.add_key_command(keys.KEY_ENTER, self.select_app)
         self.model_menu.add_key_command(keys.KEY_ENTER, self.select_model)
+
         self.model_rows.add_key_command(keys.KEY_ENTER, self.select_model_object)
         self.model_rows.add_key_command(keys.KEY_SPACE, self.toggle_row)
         # remove mouse handler, it's broken
         self.model_rows._handle_mouse_press = lambda *_: None
+        
+        self.create_btn.command = self.add_instance
+
         self.search_bar.add_key_command(keys.KEY_ENTER, self.search)
         self.search_bar.add_key_command(keys.KEY_TAB, self.search)
         self.search_bar.add_key_command(keys.KEY_CTRL_U, self.clear_search)
@@ -198,6 +204,10 @@ class Interface(PyCUI):
     @_require_selected_model
     def filter(self):
         self.show_text_box_popup("Search", print)
+
+    @_require_selected_model
+    def add_instance(self):
+        self.show_form_popup()
 
 tui = Interface()
 
