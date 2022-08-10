@@ -1,9 +1,11 @@
 import py_cui
 from django.contrib.admin import site as admin_site
+from django.db.models import fields
 from py_cui import PyCUI, keys
 from py_cui.widgets import Widget
 
 from . import edit_model
+from .base_pycui import BasePyCUI
 
 TUI_DIMENSIONS = (9, 3)
 MODEL_ADMINS = admin_site._registry 
@@ -24,8 +26,9 @@ class MenuItem:
     def __str__(self) -> str:
         return self.row_text
 
-# just a wrapper around py_cui.PyCUI
-class Interface(PyCUI):
+
+# just a wrapper around BasePyCUI
+class Interface(BasePyCUI):
     TITLE = 'Django Admin TUI'
     NO_MODEL_CHOSEN = '<No model chosen>'
 
@@ -37,41 +40,55 @@ class Interface(PyCUI):
         self.pk_name = None
         self.queryset = None
         self.search_text = None
+        self.model_form = None
         self.set_title(self.TITLE)
-
-    # mostly copied from the library, just adding default text option
-    def show_text_box_popup(self, title, command, text="", password=False):
-        self._popup = py_cui.popups.TextBoxPopup(self, title, py_cui.WHITE_ON_BLACK, command, self._renderer, password, self._logger)
-        self._logger.debug(f'Opened {str(type(self._popup))} popup with title {title}')
-        self._popup.set_text(text)
-        # shift cursor to end of text
-        for _ in text:
-            self._popup._move_right()
 
         
     # called after django has started
     def initialize(self):
-        self._create_ui() 
+        # setup screens
+        self.screens['select_model'] = self._create_select_model_screen() 
+        self.screens['model_form'] = self._create_model_form_screen() 
+        self.change_screen(self.screens['select_model'])
+
         self._add_keybindings()
         self._populate_apps()
         # TODO: remove
         self.select_app('testapp')
         self.move_focus(self.model_menu)
 
-    def _create_ui(self):
-        self.app_menu = self.add_scroll_menu('Choose an app', 0, 0, row_span=3, column_span=1)
-        self.model_menu = self.add_scroll_menu('Choose a model', 3, 0, row_span=6, column_span=1)
+    change_screen = PyCUI.apply_widget_set
+
+    def _create_select_model_screen(self):
+        select_model_screen = self.create_new_widget_set(*TUI_DIMENSIONS)
+        self.app_menu = select_model_screen.add_scroll_menu('Choose an app', 0, 0, row_span=3, column_span=1)
+        self.model_menu = select_model_screen.add_scroll_menu('Choose a model', 3, 0, row_span=6, column_span=1)
         
-        self.model_label = self.add_label(self.NO_MODEL_CHOSEN, 0, 1, row_span=1, column_span=2)
+        self.model_label = select_model_screen.add_label(self.NO_MODEL_CHOSEN, 0, 1, row_span=1, column_span=2)
 
-        self.action_menu = self.add_scroll_menu('Actions', 1, 2, row_span=2, column_span=1)
-        self.create_btn = self.add_button("Add", 3, 2, row_span=1, column_span=1)
+        self.action_menu = select_model_screen.add_scroll_menu('Actions', 1, 2, row_span=2, column_span=1)
+        self.create_btn = select_model_screen.add_button("Add", 3, 2, row_span=1, column_span=1)
 
-        self.search_bar = self.add_text_box("Search (Ctrl+U to clear)", 1, 1, row_span=1, column_span=1)
-        self.sort_btn = self.add_button("Sort", 2, 1, row_span=1, column_span=1)
-        self.filter_btn = self.add_button("Filter", 3, 1, row_span=1, column_span=1)
+        self.search_bar = select_model_screen.add_text_box("Search (Ctrl+U to clear)", 1, 1, row_span=1, column_span=1)
+        self.sort_btn = select_model_screen.add_button("Sort", 2, 1, row_span=1, column_span=1)
+        self.filter_btn = select_model_screen.add_button("Filter", 3, 1, row_span=1, column_span=1)
 
-        self.model_rows = self.add_checkbox_menu('Rows', 4, 1, row_span=5, column_span=2, checked_char='*')
+        self.model_rows = select_model_screen.add_checkbox_menu('Rows', 4, 1, row_span=5, column_span=2, checked_char='*')
+
+        return select_model_screen
+
+    def _create_model_form_screen(self):
+        model_form_screen = self.create_new_widget_set(*TUI_DIMENSIONS)
+        
+        self.model_form_menu_title = model_form_screen.add_label("Adding", 0, 0, row_span=1, column_span=1)
+        self.save_btn = model_form_screen.add_button("Save", 1, 0, row_span=1, column_span=1)
+        self.save_add_btn = model_form_screen.add_button("Save + add another", 2, 0, row_span=1, column_span=1)
+        self.delete_btn = model_form_screen.add_button("Delete", 3, 0, row_span=1, column_span=1)
+        self.cancel_btn = model_form_screen.add_button("Back", 4, 0, row_span=1, column_span=1)
+
+        # self.model_form = model_form_screen.add_form("Model form", [], 0, 1, row_span=9, column_span=2) 
+
+        return model_form_screen
 
     def _add_keybindings(self):
         self.app_menu.add_key_command(keys.KEY_ENTER, self.select_app)
@@ -207,7 +224,17 @@ class Interface(PyCUI):
 
     @_require_selected_model
     def add_instance(self):
-        self.show_form_popup()
+        if self.model_form is None:
+            self.model_form = self.screens['model_form'].add_form("Model form", [], 0, 1, row_span=9, column_span=2) 
+
+        self.model_form.clear_fields()
+        for field in self.selected_model._meta.get_fields():
+            if isinstance(field, (fields.TextField, fields.CharField)):
+                self.model_form.add_field(field.name, required=True)
+        if self.model_form.is_form_ready():
+            self.change_screen(self.screens['model_form']) 
+        else:
+            self.move_focus(self.model_menu)
 
 tui = Interface()
 

@@ -1,3 +1,10 @@
+from django.db.models import fields
+
+# FIELD_HANDLERS = {
+#     fields.TextField:  
+# }
+
+# def get_model_form(model_class):
 
 
 # show a text edit popup
